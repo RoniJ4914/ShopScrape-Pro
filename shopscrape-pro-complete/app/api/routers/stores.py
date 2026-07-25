@@ -88,12 +88,16 @@ def deactivate_store(store_id: str, db: Session = Depends(get_write_db)):
     return store
 
 
-def _run_scrape_job(store_id: str, url: str, run_id: int) -> None:
+async def _run_scrape_job(store_id: str, url: str, run_id: int) -> None:
     """
     Background job: run the scraper -> analyzer -> alert-engine chain for
     one store, then mark the scrape run finished/failed. Uses its own
     session (`get_session()`, commit-on-success) since the request's
     session is closed as soon as the 202 response goes out.
+
+    `async def` because `scrape_store` is a coroutine (it awaits the
+    fetch and each extractor's `.extract()`) -- FastAPI's `BackgroundTasks`
+    awaits async callables itself, so this doesn't need `asyncio.run()`.
     """
     with get_session() as session:
         from app.db.models import ScrapeRun as ScrapeRunModel  # local import avoids a top-level cycle
@@ -107,7 +111,7 @@ def _run_scrape_job(store_id: str, url: str, run_id: int) -> None:
             from app.analyzer.pipeline import analyze_and_record
 
             previous_products = repository.get_current_products(session, store_id)
-            new_products, method_used = scrape_store(store_id, url)
+            new_products, method_used = await scrape_store(store_id, url)
             events = analyze_and_record(session, store_id, run_id, previous_products, new_products)
             counts = repository.upsert_snapshot(session, store_id, run_id, new_products)
             repository.finish_scrape_run(
