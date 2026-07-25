@@ -6,3 +6,4 @@ sqlalchemy>=2.0
 playwright>=1.43
 pydantic>=2.6
 apscheduler>=3.10
+psycopg2>=2.9.11
