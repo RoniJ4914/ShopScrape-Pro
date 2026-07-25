@@ -1,12 +1,17 @@
 from __future__ import annotations
 
+import asyncio
+import logging
 from typing import List, Any, Dict, Optional
 from urllib.parse import urljoin
 
 import httpx
 
 from app.models.product import Product, Variant
+from app.scraper.robots import can_fetch, crawl_delay_for
 from .base import BaseExtractor
+
+logger = logging.getLogger(__name__)
 
 CANDIDATE_PATHS = [
     "/products.json",
@@ -51,6 +56,9 @@ class RestExtractor(BaseExtractor):
     async def _discover_endpoint(self, client: httpx.AsyncClient) -> Optional[str]:
         for path in CANDIDATE_PATHS:
             url = urljoin(self.base_url, path)
+            if not await can_fetch(url, client):
+                logger.info("robots.txt disallows %s; skipping this candidate REST path", url)
+                continue
             try:
                 resp = await client.get(url)
             except httpx.HTTPError:
@@ -78,9 +86,10 @@ class RestExtractor(BaseExtractor):
         products: List[Product] = []
         page = 1
         seen_ids = set()
+        url = urljoin(self.base_url, path)
+        delay = await crawl_delay_for(url, client)
 
         while page <= self.max_pages:
-            url = urljoin(self.base_url, path)
             params = {"page": page, "limit": self.page_size}
             try:
                 resp = await client.get(url, params=params)
@@ -109,6 +118,8 @@ class RestExtractor(BaseExtractor):
                 break  # server ignored pagination params -- stop rather than loop forever
 
             page += 1
+            if delay:
+                await asyncio.sleep(delay)
 
         return products
 

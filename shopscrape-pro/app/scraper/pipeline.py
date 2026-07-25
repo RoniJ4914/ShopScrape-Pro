@@ -45,6 +45,7 @@ from app.scraper.platform_detection import (
     detect_available_methods,
     detect_platform,
 )
+from app.scraper.robots import assert_can_fetch, RobotsDisallowed
 
 logger = logging.getLogger(__name__)
 
@@ -123,7 +124,13 @@ async def _run_method(
 
 async def scrape_store(store_id: str, url: str) -> Tuple[List[Product], str]:
     """
-    Scrape one store end to end: fetch -> detect -> extract.
+    Scrape one store end to end: check robots.txt -> fetch -> detect -> extract.
+
+    Every URL actually requested (this page, and any REST/GraphQL
+    endpoint an extractor hits on its own) is checked against the
+    store's robots.txt first -- see `app.scraper.robots`. Raises
+    `RobotsDisallowed` immediately if the *initial* page URL is
+    disallowed, without ever fetching it.
 
     If the chosen method raises at runtime, walk the *other* methods
     `detect_available_methods` found, in spec priority order (HTML is
@@ -132,21 +139,24 @@ async def scrape_store(store_id: str, url: str) -> Tuple[List[Product], str]:
     where `method` is whichever one actually produced the result (not
     necessarily the first choice).
     """
+    await assert_can_fetch(url)
+
     fetch_result: FetchResult = await fetch(url)
     platform, _confidence, _signals = detect_platform(fetch_result.html, fetch_result.headers)
-    available = detect_available_methods(fetch_result.html, fetch_result.network_requests)
+    available = detect_available_methods(fetch_result.html, fetch_result.network_requests, platform=platform)
     chosen = choose_method(available)
 
     ordered_methods = [chosen] + [m for m in METHOD_PRIORITY if m in available and m != chosen]
 
     last_error: Optional[Exception] = None
+    empty_result_method: Optional[str] = None  # first method that ran cleanly but found nothing
+
     for method in ordered_methods:
         try:
             products = await _run_method(
                 method, store_id, url, url,
                 fetch_result.html, fetch_result.network_requests, platform.value,
             )
-            return products, method.value
         except Exception as exc:  # a bad method must fall through, not crash the scrape
             logger.warning(
                 "Extraction method '%s' failed for store %s (%s); trying next detected method",
@@ -154,6 +164,29 @@ async def scrape_store(store_id: str, url: str) -> Tuple[List[Product], str]:
             )
             last_error = exc
             continue
+
+        if products:
+            return products, method.value
+
+        # This method ran without error but found nothing -- often because
+        # it was only "available" based on a signal that doesn't actually
+        # mean product data is present here (e.g. JSON-LD present on the
+        # page, but only for Organization/WebSite schema, not Product).
+        # Keep trying the remaining methods instead of reporting a false
+        # "0 products" for a store that may just need REST or a
+        # collection-page fetch to find its catalog.
+        logger.info(
+            "Extraction method '%s' found 0 products for store %s; trying next detected method",
+            method.value, store_id,
+        )
+        if empty_result_method is None:
+            empty_result_method = method.value
+
+    if empty_result_method is not None:
+        # Every method that actually ran completed without error, and none
+        # of them found anything -- treat this as a genuinely empty result
+        # (not a crash) rather than raising.
+        return [], empty_result_method
 
     raise RuntimeError(
         f"All extraction methods {[m.value for m in ordered_methods]} failed for "

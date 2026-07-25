@@ -129,6 +129,17 @@ _EMBEDDED_JSON_MARKERS = [
     "window.__PRELOADED_STATE__",
 ]
 
+# Platforms where a REST product-listing endpoint is a guaranteed
+# platform-level convention, not something a theme happens to reference.
+# Shopify's `/products.json` works on every storefront regardless of
+# whether anything in the rendered HTML/JS ever calls it -- most themes
+# never do, since it's served by the platform, not the theme. Relying
+# solely on the HTML/network signal below under-detects REST for
+# essentially every standard Shopify store.
+_PLATFORM_GUARANTEED_METHODS: Dict[Platform, List[ExtractionMethod]] = {
+    Platform.SHOPIFY: [ExtractionMethod.REST],
+}
+
 
 def detect_platform(html: str, headers: Optional[Dict[str, str]] = None) -> (Platform, float, Dict[str, Any]):
     headers = headers or {}
@@ -167,12 +178,17 @@ def detect_platform(html: str, headers: Optional[Dict[str, str]] = None) -> (Pla
 def detect_available_methods(
     html: str,
     network_requests: Optional[List[Dict[str, Any]]] = None,
+    platform: Optional[Platform] = None,
 ) -> List[ExtractionMethod]:
     """
     Inspect page HTML + (optionally) captured network traffic to figure out
     which extraction methods are actually viable for this store, in priority
     order. `network_requests` is a list of {"url":..., "method":..., "type":...}
     dicts, typically produced by the browser rendering engine's network capture.
+
+    `platform`, if given (from `detect_platform`), adds any methods that
+    platform guarantees regardless of what this specific page's HTML shows
+    -- see `_PLATFORM_GUARANTEED_METHODS`.
     """
     available: List[ExtractionMethod] = []
     network_requests = network_requests or []
@@ -205,6 +221,13 @@ def detect_available_methods(
     if re.search(r'itemtype=["\']https?://schema\.org/Product', html):
         available.append(ExtractionMethod.MICRODATA)
 
+    # 5b. Platform-guaranteed methods (e.g. Shopify's /products.json) --
+    # added even if nothing on *this* page hinted at them.
+    if platform is not None:
+        for method in _PLATFORM_GUARANTEED_METHODS.get(platform, []):
+            if method not in available:
+                available.append(method)
+
     # 6. HTML always works as the final fallback
     available.append(ExtractionMethod.HTML)
 
@@ -224,7 +247,7 @@ async def detect(
     network_requests: Optional[List[Dict[str, Any]]] = None,
 ) -> DetectionResult:
     platform, confidence, signals = detect_platform(html, headers)
-    available = detect_available_methods(html, network_requests)
+    available = detect_available_methods(html, network_requests, platform=platform)
     chosen = choose_method(available)
     return DetectionResult(
         platform=platform,

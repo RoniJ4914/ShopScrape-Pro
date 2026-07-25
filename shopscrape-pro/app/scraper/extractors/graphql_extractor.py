@@ -1,11 +1,16 @@
 from __future__ import annotations
 
+import asyncio
+import logging
 from typing import List, Any, Dict, Optional
 
 import httpx
 
 from app.models.product import Product, Variant
+from app.scraper.robots import can_fetch, crawl_delay_for
 from .base import BaseExtractor
+
+logger = logging.getLogger(__name__)
 
 # Generic query shape that works against most storefront-style GraphQL APIs
 # that expose a Relay-style `products(first, after)` connection. Endpoints
@@ -71,6 +76,9 @@ class GraphQLExtractor(BaseExtractor):
         client = self._client or httpx.AsyncClient(timeout=20.0)
         query = query or _GENERIC_PRODUCTS_QUERY
         try:
+            if not await can_fetch(self.endpoint, client):
+                logger.info("robots.txt disallows %s; skipping GraphQL extraction", self.endpoint)
+                return []
             products = await self._paginate(client, query)
             return self._tag_provenance(products)
         finally:
@@ -81,6 +89,7 @@ class GraphQLExtractor(BaseExtractor):
         products: List[Product] = []
         after = None
         page = 0
+        delay = await crawl_delay_for(self.endpoint, client)
 
         while page < self.max_pages:
             variables = {"first": self.page_size, "after": after}
@@ -115,6 +124,8 @@ class GraphQLExtractor(BaseExtractor):
                 break
             after = page_info.get("endCursor")
             page += 1
+            if delay:
+                await asyncio.sleep(delay)
 
         return products
 
