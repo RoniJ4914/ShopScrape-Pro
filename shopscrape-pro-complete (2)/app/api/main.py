@@ -1,9 +1,17 @@
 """
 Dashboard API -- the REST layer Base44 (or any other frontend) consumes.
 
-Read-only: this process never writes to the DB. The scraper/analyzer/
-alert-engine write; this just serves what they've written back out as
-JSON, from the same database (`DATABASE_URL` -- see `app/db/base.py`).
+Mostly read-only: the scraper/analyzer/alert-engine remain the primary
+writers, and this process still just serves most data back out as JSON
+from the same database (`DATABASE_URL` -- see `app/db/base.py`). A small,
+deliberate set of POST endpoints exist for actions the dashboard itself
+needs to originate rather than wait on the scheduler for:
+  - `POST /stores` -- register a store for tracking
+  - `POST /stores/{store_id}/activate` / `/deactivate` -- pause/resume
+  - `POST /stores/{store_id}/scrape` -- run an on-demand scrape now
+  - `POST /alerts/test-send` -- verify a channel/destination is wired up
+    correctly, without touching the real rate-limit/dispatch log
+Every other endpoint is still GET-only.
 
 Run locally:
 
@@ -45,7 +53,12 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(
     title="ShopScrape Pro Dashboard API",
-    description="Read-only REST API over scraped store/product/variant/event data.",
+    description=(
+        "REST API over scraped store/product/variant/event data. Mostly "
+        "read-only, plus a small set of POST endpoints for store "
+        "registration, pause/resume, on-demand scrapes, and alert-channel "
+        "test sends."
+    ),
     version="1.0.0",
     lifespan=lifespan,
 )
@@ -60,8 +73,8 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"] if _cors_origins == "*" else [o.strip() for o in _cors_origins.split(",")],
     allow_credentials=_cors_origins != "*",
-    allow_methods=["GET"],
-    allow_headers=["X-API-Key"],
+    allow_methods=["GET", "POST"],
+    allow_headers=["X-API-Key", "Content-Type"],
 )
 
 

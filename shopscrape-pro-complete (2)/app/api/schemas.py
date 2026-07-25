@@ -44,6 +44,24 @@ class StoreDetailOut(StoreOut):
     last_run: Optional["ScrapeRunOut"] = None
 
 
+class StoreCreate(BaseModel):
+    """Body for `POST /stores` -- register a new store for tracking."""
+
+    id: str
+    name: str
+    url: str
+    platform: Optional[str] = None
+
+
+class ScrapeTriggerOut(BaseModel):
+    """Response for `POST /stores/{store_id}/scrape` -- the run was accepted and
+    started; poll `GET /scrape-runs/{id}` for its outcome."""
+
+    run_id: int
+    store_id: str
+    status: str
+
+
 # --- Variants ------------------------------------------------------------
 
 class VariantOut(ORMModel):
@@ -148,6 +166,24 @@ StoreDetailOut.model_rebuild()
 
 
 # --- Alert dispatch history --------------------------------------------------
+
+class AlertTestRequest(BaseModel):
+    """Body for `POST /alerts/test-send` -- verify a channel/destination is
+    configured correctly by sending a single synthetic event through it.
+    This never touches the `alert_dispatches` rate-limit log -- it's meant
+    to be run as often as needed while setting up a new channel."""
+
+    channel: str  # discord | slack | email | webhook
+    destination: str  # webhook URL, email address, etc. -- channel-specific
+    store_name: str = "Test Store"
+
+
+class AlertTestResult(BaseModel):
+    channel: str
+    destination: str
+    sent: bool
+    detail: Optional[str] = None
+
 
 class AlertDispatchOut(ORMModel):
     id: int

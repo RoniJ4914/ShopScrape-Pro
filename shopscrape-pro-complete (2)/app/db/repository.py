@@ -60,6 +60,15 @@ def list_stores(session: Session, active_only: bool = True) -> List[Store]:
     return list(session.scalars(stmt).all())
 
 
+def set_store_active(session: Session, store_id: str, is_active: bool) -> Optional[Store]:
+    """Pause/resume tracking for a store (dashboard activate/deactivate toggle)."""
+    store = session.get(Store, store_id)
+    if store is None:
+        return None
+    store.is_active = is_active
+    return store
+
+
 # --- Scrape runs -----------------------------------------------------------
 
 def start_scrape_run(session: Session, store_id: str) -> ScrapeRun:

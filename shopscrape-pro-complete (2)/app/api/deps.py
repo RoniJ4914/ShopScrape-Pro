@@ -33,6 +33,25 @@ def get_db() -> Iterator[Session]:
         session.close()
 
 
+def get_write_db() -> Iterator[Session]:
+    """
+    Per-request session for the small set of write endpoints (registering
+    a store, pausing/resuming tracking, kicking off an on-demand scrape).
+    Unlike `get_db`, this commits on success and rolls back on error --
+    mirrors `app.db.base.get_session()`'s behavior but as a FastAPI
+    dependency so routers can `Depends()` it like any other session.
+    """
+    session = SessionLocal()
+    try:
+        yield session
+        session.commit()
+    except Exception:
+        session.rollback()
+        raise
+    finally:
+        session.close()
+
+
 # --- Pagination ----------------------------------------------------------
 
 DEFAULT_LIMIT = 50

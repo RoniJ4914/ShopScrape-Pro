@@ -54,6 +54,35 @@ writes anything itself.
     title/vendor/handle/tags, and variant SKU in one call, each entity
     type capped independently so one type can't crowd out the others.
 
+#### Write endpoints (added for the Base44 frontend)
+
+The API is still mostly a read-only layer, but a dashboard needs a few
+actions it can originate itself rather than always waiting on the
+scheduler:
+
+- `POST /stores` — register a store for tracking (or update
+  name/url/platform if the `id` already exists — idempotent, via the
+  existing `repository.upsert_store`).
+- `POST /stores/{store_id}/activate` / `POST /stores/{store_id}/deactivate`
+  — pause/resume tracking for a store. History (products, variants,
+  events, price history) is left untouched either way.
+- `POST /stores/{store_id}/scrape` — kick off an on-demand scrape ("Scrape
+  now" button on a store's detail page) instead of waiting for the
+  scheduler. Returns `202` immediately with the new `scrape_runs` row in
+  `running` state; the actual scrape → analyze → record chain runs as a
+  FastAPI `BackgroundTask`. Poll `GET /scrape-runs/{id}` for the outcome.
+  Calls `app.scraper.pipeline.scrape_store(store_id, url)` (see "Module 1
+  fix" below for what that now actually does).
+- `POST /alerts/test-send` — send one synthetic event through a given
+  channel/destination (`discord` | `slack` | `email` | `webhook`) so the
+  dashboard can verify a webhook URL or email address is configured
+  correctly before wiring it into a real `AlertRule`. Deliberately
+  bypasses the rate limiter and never writes to `alert_dispatches` — this
+  isn't a real dispatch.
+
+All write endpoints sit behind the same `require_api_key` dependency as
+everything else, and CORS now allows `POST` (previously `GET`-only).
+
 - **`app/db/repository.py`** — extended (not replaced) with the read
   queries backing every router above: `get_store`, `get_store_stats`,
   `list_products`/`get_product`, `list_variants`/`get_variant`,
@@ -167,6 +196,44 @@ variant, and the bulk-price-change aggregate. Also confirmed the
 fingerprint-skip optimization: an unchanged product produced **zero**
 events. `trending.py` needs a live DB (same sandbox network limitation as
 before — stubbed just enough to prove the import graph is sound).
+
+### Module 1 fix — `app/scraper/pipeline.py` (`scrape_store`)
+
+This file previously contained an accidental duplicate of
+`app/analyzer/pipeline.py` instead of the scraper's own entry point. It now
+has the real thing:
+
+- **`scrape_store(store_id, url) -> (List[Product], method_used)`** —
+  fetch (`app.scraper.browser.renderer.fetch`) → `detect_platform` +
+  `detect_available_methods` → `choose_method` → build the matching
+  extractor and call `.extract()`. If the chosen method raises, walks the
+  *other* methods detection found, in spec priority order (GraphQL > REST
+  > Embedded JSON > JSON-LD > Microdata > HTML), before giving up — HTML
+  is always in the detected set, so this only raises if literally every
+  method fails. Returns whichever method actually produced results, not
+  necessarily the first choice.
+- GraphQL needs an endpoint URL detection doesn't hand over directly, so
+  `_discover_graphql_endpoint()` resolves it: prefer a GraphQL URL actually
+  seen in captured network traffic, then one referenced literally in the
+  page's HTML/JS, then fall back to the `/graphql` convention.
+- Also added `app/scraper/extractors/base.py` (`BaseExtractor`) — every
+  extractor already did `from .base import BaseExtractor` and used
+  `self.store_id`, `self.base_url`, `self.method_name`, and
+  `self._tag_provenance(products)`, but the base class itself was missing
+  from this zip. Reconstructed to match exactly what every extractor
+  already assumes.
+
+**Verified:** `detect_platform`/`detect_available_methods`/`choose_method`
+and the resulting fallback-order construction were exercised directly
+against a synthetic Shopify+JSON-LD page (confirms the priority ordering
+and that HTML is always the last entry). `_discover_graphql_endpoint`
+was unit-tested against all three resolution paths (network hit, HTML
+hit, default fallback). `BaseExtractor._tag_provenance` was tested against
+a fake extractor subclass. Same sandbox limitation as every other module —
+no network egress, so `httpx`/`beautifulsoup4`/`fastapi`/`sqlalchemy`
+aren't installable here and a live end-to-end scrape against a real
+storefront hasn't been run. All files pass `py_compile` plus an AST pass
+confirming no unused/dangling imports.
 
 ### Module 2 — Database (`app/db/`)
 
